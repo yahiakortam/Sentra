@@ -87,7 +87,7 @@ function App() {
       }
       
       // Add sensitivity level to the request
-      const response = await axios.post('https://sentra-backend.onrender.com/analyze', {
+      const response = await axios.post('https://sentrabackend.onrender.com/analyze', {
         steps: steps,
         sensitivity: sensitivityLevel
       });
