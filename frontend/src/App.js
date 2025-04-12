@@ -18,6 +18,12 @@ function App() {
   const [searchRiskFilter, setSearchRiskFilter] = useState('all');
   const [showDetailedExplanation, setShowDetailedExplanation] = useState(false);
   const [currentExplanationStep, setCurrentExplanationStep] = useState(null);
+  const [fixingStep, setFixingStep] = useState(false);
+  const [currentFixStep, setCurrentFixStep] = useState(null);
+  const [showFixedStep, setShowFixedStep] = useState(false);
+  const [fixedStepResult, setFixedStepResult] = useState(null);
+  const [previousWorkflow, setPreviousWorkflow] = useState(null);
+  const [showComparison, setShowComparison] = useState(false);
   
   // Example workflows
   const exampleWorkflows = {
@@ -51,21 +57,37 @@ function App() {
       .filter(step => step.length > 0)
       .map(step => {
         // Remove numbering if present (e.g., "1. Step" becomes "Step")
-        const match = step.match(/^\\d+\\.\\s*(.+)$/);
+        const match = step.match(/^\d+\.\s*(.+)$/);
         return match ? match[1] : step;
       });
     
+    // Input validation
     if (steps.length === 0) {
-      setError('Please enter at least one workflow step.');
+      setError('Please enter a workflow before analyzing.');
+      setLoading(false);
+      setLoadingAnimation(false);
+      return;
+    }
+    
+    if (steps.length < 2) {
+      setError('Your workflow is too short to analyze meaningfully. Please add more steps.');
       setLoading(false);
       setLoadingAnimation(false);
       return;
     }
     
     try {
+      // Store previous results for comparison if needed
+      if (results.length > 0) {
+        setPreviousWorkflow({
+          steps: workflowSteps,
+          results: results,
+          sensitivity: sensitivityLevel
+        });
+      }
+      
       // Add sensitivity level to the request
-      const response = await axios.post('https://sentra-backend.onrender.com/analyze', {
-
+      const response = await axios.post('http://localhost:8000/analyze', {
         steps: steps,
         sensitivity: sensitivityLevel
       });
@@ -106,6 +128,11 @@ function App() {
       const updatedHistory = [newWorkflow, ...history].slice(0, 10); // Keep last 10 instead of 3
       setHistory(updatedHistory);
       sessionStorage.setItem('workflowHistory', JSON.stringify(updatedHistory));
+      
+      // If we have previous results, show comparison option
+      if (previousWorkflow) {
+        setShowComparison(true);
+      }
       
     } catch (err) {
       console.error('Error analyzing workflow:', err);
@@ -213,6 +240,70 @@ function App() {
     setCurrentExplanationStep(step);
     setShowDetailedExplanation(true);
   };
+  
+  // Function to handle Fix This Step button click
+  const handleFixStep = async (step) => {
+    setFixingStep(true);
+    setCurrentFixStep(step);
+    setShowFixedStep(false);
+    setFixedStepResult(null);
+    
+    try {
+      const response = await axios.post('http://localhost:8000/fix-step', {
+        step: step.step,
+        risk: step.risk,
+        recommendation: step.recommendation,
+        reason: step.reason
+      });
+      
+      setFixedStepResult(response.data);
+      setShowFixedStep(true);
+    } catch (err) {
+      console.error('Error fixing step:', err);
+      setError('Error fixing step. Please try again.');
+    } finally {
+      setFixingStep(false);
+    }
+  };
+  
+  // Function to compare current and previous workflow
+  const compareWorkflows = () => {
+    if (!previousWorkflow || !results.length) return null;
+    
+    const comparisonResults = [];
+    
+    // Map current steps to previous steps by name
+    results.forEach(currentResult => {
+      const previousResult = previousWorkflow.results.find(
+        prevResult => prevResult.step === currentResult.step
+      );
+      
+      if (previousResult) {
+        const riskChanged = previousResult.risk !== currentResult.risk;
+        const riskImproved = 
+          (previousResult.risk === 'high' && (currentResult.risk === 'medium' || currentResult.risk === 'low')) ||
+          (previousResult.risk === 'medium' && currentResult.risk === 'low');
+        
+        comparisonResults.push({
+          step: currentResult.step,
+          currentRisk: currentResult.risk,
+          previousRisk: previousResult.risk,
+          changed: riskChanged,
+          improved: riskImproved
+        });
+      } else {
+        comparisonResults.push({
+          step: currentResult.step,
+          currentRisk: currentResult.risk,
+          previousRisk: 'new',
+          changed: true,
+          improved: false
+        });
+      }
+    });
+    
+    return comparisonResults;
+  };
 
   // Function to get detailed explanation for a step
   const getDetailedExplanation = (step) => {
@@ -293,6 +384,7 @@ function App() {
     
     const summaryData = calculateSummary(resultsData);
     const riskScore = calculateRiskScore(resultsData);
+    const comparisonData = showComparison ? compareWorkflows() : null;
     
     return (
       <div id={isHistoryItem ? `history-results-${isHistoryItem}` : "results-container"}>
@@ -300,13 +392,58 @@ function App() {
           <Col>
             <div className="d-flex justify-content-between align-items-center mb-3">
               <h3>Analysis Results</h3>
-              {showDownloadButton && (
-                <Button variant="outline-primary" onClick={handleDownloadPDF}>
-                  <i className="bi bi-download me-2"></i>
-                  Download Report as PDF
-                </Button>
-              )}
+              <div>
+                {showComparison && !isHistoryItem && (
+                  <Button 
+                    variant="outline-info" 
+                    className="me-2" 
+                    onClick={() => setShowComparison(!showComparison)}
+                  >
+                    <i className="bi bi-arrow-left-right me-1"></i>
+                    {showComparison ? "Hide Comparison" : "Compare with Previous"}
+                  </Button>
+                )}
+                {showDownloadButton && (
+                  <Button variant="outline-primary" onClick={handleDownloadPDF}>
+                    <i className="bi bi-download me-2"></i>
+                    Download Report as PDF
+                  </Button>
+                )}
+              </div>
             </div>
+            
+            {showComparison && comparisonData && !isHistoryItem && (
+              <Card className="mb-3 border-info">
+                <Card.Header className="bg-info text-white">
+                  <i className="bi bi-arrow-left-right me-2"></i>
+                  Workflow Comparison
+                </Card.Header>
+                <Card.Body>
+                  <p>Comparing current workflow with previous analysis:</p>
+                  <ul className="list-unstyled">
+                    {comparisonData.map((item, idx) => (
+                      <li key={idx} className="mb-2">
+                        {item.changed ? (
+                          <span>
+                            {item.improved ? (
+                              <Badge bg="success" className="me-2">↓ IMPROVED</Badge>
+                            ) : (
+                              <Badge bg="warning" className="me-2">CHANGED</Badge>
+                            )}
+                            Step "{item.step}": {item.previousRisk === 'new' ? 'New step' : `${item.previousRisk.toUpperCase()} to ${item.currentRisk.toUpperCase()}`}
+                          </span>
+                        ) : (
+                          <span className="text-muted">
+                            <Badge bg="secondary" className="me-2">UNCHANGED</Badge>
+                            Step "{item.step}": Still {item.currentRisk.toUpperCase()} risk
+                          </span>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </Card.Body>
+              </Card>
+            )}
             
             {summaryData && (
               <Card className="mb-3">
@@ -370,10 +507,82 @@ function App() {
                           </Alert>
                         </div>
                       </div>
+                      
+                      {/* Risk Type Tags */}
+                      {result.risk_types && result.risk_types.length > 0 && (
+                        <div className="mb-2">
+                          {result.risk_types.map((type, idx) => (
+                            <Badge 
+                              key={idx} 
+                              bg="secondary" 
+                              className="me-1"
+                              style={{ fontSize: '0.8rem' }}
+                            >
+                              {type}
+                            </Badge>
+                          ))}
+                        </div>
+                      )}
+                      
                       <Card.Subtitle className="mb-2 text-muted">Recommendation</Card.Subtitle>
                       <Card.Text>{result.recommendation}</Card.Text>
+                      
+                      {/* Suggested Reviewer */}
+                      {result.suggested_reviewer && (
+                        <div className="mb-2">
+                          <Card.Subtitle className="mb-1 text-muted">
+                            <i className="bi bi-person me-1"></i>
+                            Suggested Reviewer
+                          </Card.Subtitle>
+                          <Badge 
+                            bg="info" 
+                            className="me-1"
+                            style={{ fontSize: '0.9rem' }}
+                          >
+                            {result.suggested_reviewer}
+                          </Badge>
+                        </div>
+                      )}
+                      
                       <Card.Subtitle className="mb-2 text-muted">Reason</Card.Subtitle>
                       <Card.Text>{result.reason}</Card.Text>
+                      
+                      {/* Fix This Step Button for medium and high risk */}
+                      {(result.risk.toLowerCase() === 'medium' || result.risk.toLowerCase() === 'high') && (
+                        <div className="mt-3">
+                          <Button 
+                            variant="outline-primary" 
+                            size="sm"
+                            onClick={() => handleFixStep(result)}
+                            disabled={fixingStep}
+                          >
+                            <i className="bi bi-lightbulb me-1"></i>
+                            Fix This Step
+                          </Button>
+                        </div>
+                      )}
+                      
+                      {/* Show rewritten step if available */}
+                      {showFixedStep && currentFixStep && currentFixStep.step === result.step && fixedStepResult && (
+                        <div className="mt-3 p-3 bg-light border rounded">
+                          <h6 className="text-primary">
+                            <i className="bi bi-lightbulb me-1"></i>
+                            AI-Suggested Rewrite:
+                          </h6>
+                          <p className="mb-0">{fixedStepResult.rewritten_step}</p>
+                        </div>
+                      )}
+                      
+                      {/* Show rewritten step if it came from the API directly */}
+                      {!showFixedStep && result.rewritten_step && (
+                        <div className="mt-3 p-3 bg-light border rounded">
+                          <h6 className="text-primary">
+                            <i className="bi bi-lightbulb me-1"></i>
+                            AI-Suggested Rewrite:
+                          </h6>
+                          <p className="mb-0">{result.rewritten_step}</p>
+                        </div>
+                      )}
                     </div>
                   </div>
                 </Card.Body>
